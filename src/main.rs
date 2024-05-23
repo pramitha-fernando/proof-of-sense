@@ -58,6 +58,33 @@ impl Proof {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Key {
+    node_id: usize,
+    counter: usize,
+    key: Scalar,
+    hash: Vec<u8>,
+}
+
+impl Key {
+    fn new(node_id: usize, counter: usize, key: Scalar, hash: Vec<u8>) -> Self {
+        Key {
+            node_id,
+            counter,
+            key,
+            hash,
+        }
+    }
+
+    fn verify_key_hash(&self) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(self.key.to_bytes());
+        let hash_result = hasher.finalize();
+
+        hash_result.to_vec() == self.hash
+    }
+}
+
 // struct for block
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Block {
