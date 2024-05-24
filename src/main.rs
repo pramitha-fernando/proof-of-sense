@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fmt::Write, sync::{Arc, Mutex}};
 use k256::{elliptic_curve::{sec1::ToEncodedPoint, group::GroupEncoding}, ProjectivePoint, Scalar, AffinePoint};
 use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+use sha2::{digest::generic_array::{GenericArray, typenum::U32}, Digest, Sha256};
 use libp2p::{
     core::upgrade, futures::{executor::block_on, StreamExt}, identity, mdns::{Mdns, MdnsConfig, MdnsEvent}, mplex, noise::{Keypair as NoiseKeypair, NoiseConfig, X25519Spec}, ping::{Ping, PingConfig}, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent,}, tcp::TcpConfig, yamux, PeerId, Swarm, Transport
 };
@@ -63,11 +63,11 @@ struct Key {
     node_id: usize,
     counter: usize,
     key: Scalar,
-    hash: Vec<u8>,
+    hash: GenericArray<u8, U32>, // sha256 output is 32bytes
 }
 
 impl Key {
-    fn new(node_id: usize, counter: usize, key: Scalar, hash: Vec<u8>) -> Self {
+    fn new(node_id: usize, counter: usize, key: Scalar, hash: GenericArray<u8, U32>) -> Self {
         Key {
             node_id,
             counter,
@@ -81,7 +81,7 @@ impl Key {
         hasher.update(self.key.to_bytes());
         let hash_result = hasher.finalize();
 
-        hash_result.to_vec() == self.hash
+        hash_result == self.hash
     }
 }
 
@@ -209,10 +209,6 @@ impl Block {
     false
 
     }
-
-    
-
-
     // }
 }
 
