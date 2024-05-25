@@ -1,11 +1,18 @@
-use std::{collections::HashSet, fmt::Write, sync::{Arc, Mutex}};
+use std::{collections::HashSet, fmt::Write, fs::File, ptr::read, sync::{Arc, Mutex}};
 use k256::{elliptic_curve::{sec1::ToEncodedPoint, group::GroupEncoding}, ProjectivePoint, Scalar, AffinePoint};
 use serde::{Serialize, Deserialize};
 use sha2::{digest::generic_array::{GenericArray, typenum::U32}, Digest, Sha256};
 use libp2p::{
-    core::upgrade, futures::{executor::block_on, StreamExt}, identity, mdns::{Mdns, MdnsConfig, MdnsEvent}, mplex, noise::{Keypair as NoiseKeypair, NoiseConfig, X25519Spec}, ping::{Ping, PingConfig}, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent,}, tcp::TcpConfig, yamux, PeerId, Swarm, Transport
+    core::upgrade, futures::{executor::block_on, StreamExt}, 
+    gossipsub::{Gossipsub, GossipsubConfig, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, RawGossipsubMessage, ValidationMode}, 
+    identity, mdns::{Mdns, MdnsConfig, MdnsEvent}, mplex, 
+    noise::{Keypair as NoiseKeypair, NoiseConfig, X25519Spec}, 
+    ping::{Ping, PingConfig}, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent,}, 
+    tcp::TcpConfig, yamux, PeerId, Swarm, Transport,
+    
 };
 use tokio::{sync::Mutex as AsyncMutex, time::{self, Duration}};
+use csv::ReaderBuilder;
 
 #[macro_use]
 extern crate lazy_static;
@@ -59,16 +66,16 @@ impl Proof {
 }
 
 #[derive(Debug, Clone)]
-struct Key {
+struct ReceivedData {
     node_id: usize,
     counter: usize,
     key: Scalar,
     hash: GenericArray<u8, U32>, // sha256 output is 32bytes
 }
 
-impl Key {
+impl ReceivedData {
     fn new(node_id: usize, counter: usize, key: Scalar, hash: GenericArray<u8, U32>) -> Self {
-        Key {
+        ReceivedData {
             node_id,
             counter,
             key,
@@ -311,6 +318,14 @@ impl App {
             .multiplex(upgrade::SelectUpgrade::new(yamux::YamuxConfig::default(), mplex::MplexConfig::new()))
             .boxed();
 
+        // set up gossipsub
+        // let gossipsub_config = GossipsubConfig::default();
+        // let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(local_key.clone()),gossipsub_config)
+        //     .expect("Correct Gossipsub instantiation");
+        // // subscrive to a topic
+        // let topic = Topic::new("blocks");
+        // gossipsub.subscribe(&topic).expect("Subscription to 'blocks' topic");
+
         // Create a Swarm to manage peers and events.
         let mut swarm = {
             let mdns = Mdns::new(MdnsConfig::default()).await?;
@@ -396,10 +411,8 @@ impl App {
     // }
 
     // async fn broadcast_block(&self, swarm: &mut Swarm<MyBehaviour>, block: Block) {
-    //     // This would use libp2p pubsub or similar to broadcast the block
-    //     // For example, using gossipsub to broadcast the block
-    //     let message = block
-    //     swarm.floodsub.publish(TOPIC, message);
+    //     let topic = Topic::new("blocks");
+    //     let message = serde_json::to_string(&block).unwrap();
     // }
 
     
@@ -408,28 +421,101 @@ impl App {
     
 }
 
-// fn validate_block(block: &Block) -> bool {
-//     // we validate only the proof for now
-//     // TODO: Signature validation, Transaction validation
-//     Block::valid_proof(&block.proof)
-// }
-
-fn get_recovered_key() -> (Scalar, ProjectivePoint) {
-    // Define scalar x
-    let x = Scalar::from(43u32);
-
-    // get a list of scalars from the sensed data
-    // add them together to create the key
-    // generate and publish the public key
-    // return the keys
-
-    // Calculate points B s.t. B = xG
-    let b = *POINT_G * x;
-
-    (x, b)
+fn validate_block(block: &Block) -> bool {
+    // we validate only the proof for now
+    // TODO: Signature validation, Transaction validation
+    Block::valid_proof(&block.proof)
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)] // Adjust the number of threads based on your needs
+fn get_recovered_key() -> (Scalar, ProjectivePoint) {
+
+    let mut hasher = Sha256::new();
+    hasher.update(&[0u8]);
+    let hash_result = hasher.finalize();
+
+    let empty_rx_data = ReceivedData::new(0, 0, Scalar::from(0u32), hash_result);
+
+    let mut rx_data = vec![empty_rx_data; TOTAL]; //initiate recovered key vector to all zeros. Vec size is total keys
+
+
+    let file = File::open("sample_keys.txt").unwrap();
+    let mut reader = ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b',') // delimiter
+        .from_reader(file);
+
+    let mut index = 0;
+    for result in reader.records() {
+
+        if index + 1 > TOTAL {break;}
+        // println!("Index is {}", index);
+
+        let record = result.unwrap();
+        // extract node ID
+        if let Some(node_id) = record.get(0) {
+            let node_id = node_id.trim();
+            match node_id.parse::<usize>() {
+                Ok(id) => {
+                    if let Some(data) = rx_data.get_mut(index) {
+                        data.node_id = id;
+                    } else {
+                        eprintln!("Index out of bounds: {}", index);
+                    }                    
+                }
+                Err(e) => eprintln!("Failed to parse '{}' as integer: {}", node_id, e),
+            }
+        }
+
+        // extract session id
+        if let Some(session_id) = record.get(1) {
+            let session_id = session_id.trim();
+            match session_id.parse::<usize>() {
+                Ok(id) => {
+                    if let Some(data) = rx_data.get_mut(index) {
+                        data.counter = id;
+                    } else {
+                        eprintln!("Index out of bounds: {}", index);
+                    }                    
+                }
+                Err(e) => eprintln!("Failed to parse '{}' as integer: {}", session_id, e),
+            }
+        }
+
+        // extract key
+        if let Some(key) = record.get(2) {
+            let key = key.trim();
+            match key.parse::<u32>() {
+                Ok(scalar) => {
+                    if let Some(data) = rx_data.get_mut(index) {
+                        data.key = Scalar::from(scalar);
+                    } else {
+                        eprintln!("Index out of bounds: {}", index);
+                    }                    
+                }
+                Err(e) => eprintln!("Failed to parse '{}' as integer: {}", key, e),
+            }
+        }
+
+        index += 1;
+    }
+
+    println!("Found {} out of {} keys. Threhold is set to {}", index, TOTAL, THRESHOLD);
+
+
+    // Define scalar x
+    let mut final_key = Scalar::from(0u32);
+
+    for data in rx_data.iter() {
+        final_key = final_key + data.key;
+    }
+
+    // Calculate points B s.t. B = xG
+    let final_public_key = *POINT_G * final_key;
+
+    (final_key, final_public_key)
+}
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
 
     // if let Err(e) = run().await {
@@ -440,6 +526,8 @@ async fn main() {
     // if let Err(e) = app.run().await {
     //     eprintln!("Error running app: {:?}", e);
     // }
+
+    // let testing = get_recovered_key();
 
     let mut app = App::new().await;
     let _ = app.unwrap().run().await;
