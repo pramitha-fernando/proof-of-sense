@@ -136,49 +136,58 @@ impl Block {
 
         while !validated {
 
-            let (scalar_x, pub_key) = get_recovered_key();
-            *POINT_B.lock().unwrap() = pub_key; // update the public key
+            if let Ok((scalar_x, pub_key)) = get_recovered_key() {
 
-            // generate random scalar r and point A
-            let scalar_r = Scalar::from(56u32);
-            let point_a = *POINT_G * scalar_r;
+            
+                *POINT_B.lock().unwrap() = pub_key; // update the public key
 
-            // Calculate xP, rP and 
-            let point_xp = *POINT_P * scalar_x;
-            let point_rp = *POINT_P * scalar_r;
+                // generate random scalar r and point A
+                let scalar_r = Scalar::from(56u32);
+                let point_a = *POINT_G * scalar_r;
 
-            let mut hasher = Sha256::new();
+                // Calculate xP, rP and 
+                let point_xp = *POINT_P * scalar_x;
+                let point_rp = *POINT_P * scalar_r;
 
-            hasher.update(point_xp.to_encoded_point(true));
-            hasher.update(point_rp.to_encoded_point(true));
-            hasher.update(point_a.to_encoded_point(true));
-            let hash = hasher.finalize();
+                let mut hasher = Sha256::new();
 
-            // Convert the first 4 bytes of the SHA-256 output to u32
-            // here we are dropping the last 4 bytes
-            let bytes = hash[0..16].try_into().unwrap();
-            let output: u128 = u128::from_be_bytes(bytes);
+                hasher.update(point_xp.to_encoded_point(true));
+                hasher.update(point_rp.to_encoded_point(true));
+                hasher.update(point_a.to_encoded_point(true));
+                let hash = hasher.finalize();
 
-            // Calculate c = H(xP, rP, A)
-            let scalar_c = Scalar::from(output);
+                // Convert the first 4 bytes of the SHA-256 output to u32
+                // here we are dropping the last 4 bytes
+                let bytes = hash[0..16].try_into().unwrap();
+                let output: u128 = u128::from_be_bytes(bytes);
 
-            // Caclulate s = r + c.x
-            let scalar_s = scalar_r + scalar_c * scalar_x;
+                // Calculate c = H(xP, rP, A)
+                let scalar_c = Scalar::from(output);
+
+                // Caclulate s = r + c.x
+                let scalar_s = scalar_r + scalar_c * scalar_x;
 
 
-            proof = Proof {
-                point_a: point_a.to_affine(), 
-                scalar_s: scalar_s, 
-                point_xp: point_xp.to_affine(),
-                point_rp: point_rp.to_affine(), 
-            };
+                proof = Proof {
+                    point_a: point_a.to_affine(), 
+                    scalar_s: scalar_s, 
+                    point_xp: point_xp.to_affine(),
+                    point_rp: point_rp.to_affine(), 
+                };
 
-            validated = Self::valid_proof(&proof);
+                validated = Self::valid_proof(&proof);
+            } else {
+                time::sleep(Duration::from_secs(5)).await;
+
+                eprintln!("No recovered keys yet!");
+                
+            }
 
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
         
         proof
+        
 
     }
 
@@ -427,7 +436,7 @@ fn validate_block(block: &Block) -> bool {
     Block::valid_proof(&block.proof)
 }
 
-fn get_recovered_key() -> (Scalar, ProjectivePoint) {
+fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
     let mut hasher = Sha256::new();
     hasher.update(&[0u8]);
@@ -437,6 +446,10 @@ fn get_recovered_key() -> (Scalar, ProjectivePoint) {
 
     let mut rx_data = vec![empty_rx_data; TOTAL]; //initiate recovered key vector to all zeros. Vec size is total keys
 
+    let metadata = std::fs::metadata("sample_keys.txt").unwrap();
+    if metadata.len() == 0 {
+        return Err(From::from("The file is empty."));
+    }
 
     let file = File::open("sample_keys.txt").unwrap();
     let mut reader = ReaderBuilder::new()
@@ -512,7 +525,7 @@ fn get_recovered_key() -> (Scalar, ProjectivePoint) {
     // Calculate points B s.t. B = xG
     let final_public_key = *POINT_G * final_key;
 
-    (final_key, final_public_key)
+    Ok((final_key, final_public_key))
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
