@@ -177,10 +177,8 @@ impl Block {
 
                 validated = Self::valid_proof(&proof);
             } else {
-                time::sleep(Duration::from_secs(5)).await;
-
                 eprintln!("No recovered keys yet!");
-                
+                time::sleep(Duration::from_secs(5)).await;
             }
 
         }
