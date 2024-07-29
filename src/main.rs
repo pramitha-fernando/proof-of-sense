@@ -177,7 +177,7 @@ impl Block {
 
                 validated = Self::valid_proof(&proof);
             } else {
-                eprintln!("No recovered keys yet!");
+                eprintln!("Not enough recovered keys yet!");
                 time::sleep(Duration::from_secs(5)).await;
             }
 
@@ -511,6 +511,10 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
     }
 
     println!("Found {} out of {} keys. Threhold is set to {}", index, TOTAL, THRESHOLD);
+
+    if index < THRESHOLD {
+        return Err(From::from("Not enough keys"));
+    }
 
 
     // Define scalar x
