@@ -1,22 +1,44 @@
-use std::{collections::HashSet, fmt::Write, fs::File, ptr::read, sync::{Arc, Mutex}};
-use k256::{elliptic_curve::{sec1::ToEncodedPoint, group::GroupEncoding}, ProjectivePoint, Scalar, AffinePoint};
-use serde::{Serialize, Deserialize};
-use sha2::{digest::generic_array::{GenericArray, typenum::U32}, Digest, Sha256};
-use libp2p::{
-    core::upgrade, futures::{executor::block_on, StreamExt}, 
-    gossipsub::{Gossipsub, GossipsubConfig, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, RawGossipsubMessage, ValidationMode}, 
-    identity, mdns::{Mdns, MdnsConfig, MdnsEvent}, mplex, 
-    noise::{Keypair as NoiseKeypair, NoiseConfig, X25519Spec}, 
-    ping::{Ping, PingConfig}, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent,}, 
-    tcp::TcpConfig, yamux, PeerId, Swarm, Transport,
-    
-};
-use tokio::{sync::Mutex as AsyncMutex, time::{self, Duration}};
 use csv::ReaderBuilder;
-use std::process::{Command, Stdio};
-use std::io::{self, BufReader, BufRead};
-use std::error::Error;
+use k256::{
+    elliptic_curve::{group::GroupEncoding, sec1::ToEncodedPoint},
+    AffinePoint, ProjectivePoint, Scalar,
+};
+use libp2p::{
+    core::upgrade,
+    futures::{executor::block_on, StreamExt},
+    gossipsub::{
+        Gossipsub, GossipsubConfig, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity,
+        RawGossipsubMessage, ValidationMode,
+    },
+    identity,
+    mdns::{Mdns, MdnsConfig, MdnsEvent},
+    mplex,
+    noise::{Keypair as NoiseKeypair, NoiseConfig, X25519Spec},
+    ping::{Ping, PingConfig},
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    tcp::TcpConfig,
+    yamux, PeerId, Swarm, Transport,
+};
 use reqwest::{self, Body, Client};
+use serde::{Deserialize, Serialize};
+use sha2::{
+    digest::generic_array::{typenum::U32, GenericArray},
+    Digest, Sha256,
+};
+use std::error::Error;
+use std::io::{self, BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::{
+    collections::HashSet,
+    fmt::Write,
+    fs::File,
+    ptr::read,
+    sync::{Arc, Mutex},
+};
+use tokio::{
+    sync::Mutex as AsyncMutex,
+    time::{self, Duration},
+};
 
 #[macro_use]
 extern crate lazy_static;
@@ -54,7 +76,6 @@ struct PowerReading {
     power_db: Vec<f32>,
 }
 
-
 // Serialize is implemented for AffinePoint and Scalar with serde feature
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Proof {
@@ -72,13 +93,21 @@ impl std::fmt::Display for Proof {
         let point_xp_hex = hex::encode(self.point_xp.to_bytes().as_slice());
         let point_rp_hex = hex::encode(self.point_rp.to_bytes().as_slice());
 
-        write!(f, "Proof {{\n  point_a: {},\n  scalar_s: {},\n  point_xp: {},\n  point_rp: {}\n}}", 
-            point_a_hex, scalar_s_hex, point_xp_hex, point_rp_hex)
+        write!(
+            f,
+            "Proof {{\n  point_a: {},\n  scalar_s: {},\n  point_xp: {},\n  point_rp: {}\n}}",
+            point_a_hex, scalar_s_hex, point_xp_hex, point_rp_hex
+        )
     }
 }
 
 impl Proof {
-    fn new(point_a: AffinePoint, scalar_s: Scalar, point_xp: AffinePoint, point_rp: AffinePoint) -> Self {
+    fn new(
+        point_a: AffinePoint,
+        scalar_s: Scalar,
+        point_xp: AffinePoint,
+        point_rp: AffinePoint,
+    ) -> Self {
         Proof {
             point_a,
             scalar_s,
@@ -126,7 +155,13 @@ struct Block {
 }
 
 impl Block {
-    fn new(index: usize, timestamp: i64, proof: Proof, previous_hash: String, data: String) -> Self {
+    fn new(
+        index: usize,
+        timestamp: i64,
+        proof: Proof,
+        previous_hash: String,
+        data: String,
+    ) -> Self {
         Block {
             index,
             timestamp,
@@ -153,22 +188,18 @@ impl Block {
     }
 
     async fn mine_block(total_parts: usize, threshold: usize) -> Proof {
-        
         let mut validated = false;
         let mut proof = Proof::new(*POINT_I, Scalar::ONE, *POINT_I, *POINT_I); // placeholder
 
         while !validated {
-
             if let Ok((scalar_x, pub_key)) = get_recovered_key() {
-
-            
                 *POINT_B.lock().unwrap() = pub_key; // update the public key
 
                 // generate random scalar r and point A
                 let scalar_r = Scalar::from(56u32);
                 let point_a = *POINT_G * scalar_r;
 
-                // Calculate xP, rP and 
+                // Calculate xP, rP and
                 let point_xp = *POINT_P * scalar_x;
                 let point_rp = *POINT_P * scalar_r;
 
@@ -190,12 +221,11 @@ impl Block {
                 // Caclulate s = r + c.x
                 let scalar_s = scalar_r + scalar_c * scalar_x;
 
-
                 proof = Proof {
-                    point_a: point_a.to_affine(), 
-                    scalar_s: scalar_s, 
+                    point_a: point_a.to_affine(),
+                    scalar_s: scalar_s,
                     point_xp: point_xp.to_affine(),
-                    point_rp: point_rp.to_affine(), 
+                    point_rp: point_rp.to_affine(),
                 };
 
                 validated = Self::valid_proof(&proof);
@@ -203,13 +233,10 @@ impl Block {
                 eprintln!("Not enough recovered keys yet!");
                 time::sleep(Duration::from_secs(5)).await;
             }
-
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
-        
-        proof
-        
 
+        proof
     }
 
     fn valid_proof(proof: &Proof) -> bool {
@@ -237,14 +264,13 @@ impl Block {
         // Calculate rP + c.xP
         let point_rpcxp = proof.point_xp * scalar_c + proof.point_rp;
 
-    if point_sg == point_acb && point_sp == point_rpcxp{
-        println!("Proof is valid:)");
-        return true
-    } 
+        if point_sg == point_acb && point_sp == point_rpcxp {
+            println!("Proof is valid:)");
+            return true;
+        }
 
-    println!("Proof validation unsuccessful :(");
-    false
-
+        println!("Proof validation unsuccessful :(");
+        false
     }
     // }
 }
@@ -265,7 +291,6 @@ impl Blockchain {
             total_parts: TOTAL,
             threshold: THRESHOLD,
             height: 0,
-
         };
 
         blockchain.create_genesis_block();
@@ -274,11 +299,20 @@ impl Blockchain {
 
     // genesis block representing the starting block
     fn create_genesis_block(&mut self) {
-
-        let genesis_proof = Proof{point_a: *POINT_I, scalar_s: Scalar::ONE, point_xp: *POINT_I, point_rp: *POINT_I};
-        let genesis_block = Block::new(0, chrono::Utc::now().timestamp(), genesis_proof, String::new(), "Genesis Block".to_string());
+        let genesis_proof = Proof {
+            point_a: *POINT_I,
+            scalar_s: Scalar::ONE,
+            point_xp: *POINT_I,
+            point_rp: *POINT_I,
+        };
+        let genesis_block = Block::new(
+            0,
+            chrono::Utc::now().timestamp(),
+            genesis_proof,
+            String::new(),
+            "Genesis Block".to_string(),
+        );
         self.chain.push(genesis_block);
-        
     }
 
     // add a mined block to an existing chain
@@ -298,8 +332,6 @@ impl Blockchain {
         self.chain.push(new_block);
         println!("Block mined!");
         println!("Total blocks mined: {}", current_height);
-        
-        
     }
 
     // async fn add_received_block(&mut self, new_block: Block) {
@@ -314,12 +346,8 @@ impl Blockchain {
     }
 
     fn get_last_block(&self) -> Block {
-
         // there is always at least one block because of the genesis block
-        self.chain.last()
-            .unwrap()
-            .clone()
-
+        self.chain.last().unwrap().clone()
     }
 }
 
@@ -330,8 +358,7 @@ struct App {
 }
 
 impl App {
-
-    pub async fn new()-> Result<(Self), Box<dyn std::error::Error>> {
+    pub async fn new() -> Result<(Self), Box<dyn std::error::Error>> {
         // Generate a key pair for this node.
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
@@ -345,7 +372,10 @@ impl App {
         let transport = TcpConfig::new()
             .upgrade(upgrade::Version::V1)
             .authenticate(noise)
-            .multiplex(upgrade::SelectUpgrade::new(yamux::YamuxConfig::default(), mplex::MplexConfig::new()))
+            .multiplex(upgrade::SelectUpgrade::new(
+                yamux::YamuxConfig::default(),
+                mplex::MplexConfig::new(),
+            ))
             .boxed();
 
         // set up gossipsub
@@ -360,27 +390,25 @@ impl App {
         let mut swarm = {
             let mdns = Mdns::new(MdnsConfig::default()).await?;
             SwarmBuilder::new(transport, mdns, local_peer_id)
-                .executor(Box::new(|fut| { tokio::spawn(fut); }))
+                .executor(Box::new(|fut| {
+                    tokio::spawn(fut);
+                }))
                 .build()
         };
 
         Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0".parse()?)?;
-
 
         Ok(Self {
             swarm: swarm,
             blockchain: Arc::new(AsyncMutex::new(Blockchain::new())),
             peers: Arc::new(AsyncMutex::new(HashSet::new())),
         })
-
-
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-
         let blockchain = self.blockchain.clone();
 
-        tokio::spawn(async move{
+        tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(6)); // mining interval
             loop {
                 interval.tick().await;
@@ -397,7 +425,7 @@ impl App {
                     Err(e) => eprintln!("Failed to serialize block: {}", e),
                 }
 
-                    // minimum and maximum frequencies in MHz
+                // minimum and maximum frequencies in MHz
                 let frequency = "2400:2600";
                 // RX RF amplifier 1=Enable, 0=Disable
                 let amp_enable = "0";
@@ -408,8 +436,8 @@ impl App {
                 // in_width] # FFT bin width (frequency resolution) in Hz, 2445-5000000
                 let bin_width = "1000000";
 
-                let sweep_result = hackrf_sweep(frequency, amp_enable, if_gain_db, bb_gain_db, bin_width).await;
-                
+                let sweep_result =
+                    hackrf_sweep(frequency, amp_enable, if_gain_db, bb_gain_db, bin_width).await;
             }
         });
 
@@ -432,7 +460,7 @@ impl App {
                             println!("New peer discovered: {:?}", peer);
                         }
                     }
-                },
+                }
                 MdnsEvent::Expired(peers) => {
                     let mut peers_guard = self.peers.lock().await;
                     for (peer, _) in peers {
@@ -451,7 +479,7 @@ impl App {
     //         // Check if this block extends the longest chain
     //         if block.index > bc.get_latest_index() {
     //             bc.add_received_block(block);
-                
+
     //             // Broadcast this block to other peers
     //             self.broadcast_block(swarm, &block).await;
     //         } else {
@@ -468,27 +496,21 @@ impl App {
     //     let topic = Topic::new("blocks");
     //     let message = serde_json::to_string(&block).unwrap();
     // }
-
-    
-
-    
-
-    
-    
 }
 
-async fn hackrf_sweep(frequency: &str, amp_enable: &str, if_gain_db: &str, bb_gain_db: &str, bin_width: &str) -> Result<(), Box<dyn Error>> {
-
+async fn hackrf_sweep(
+    frequency: &str,
+    amp_enable: &str,
+    if_gain_db: &str,
+    bb_gain_db: &str,
+    bin_width: &str,
+) -> Result<(), Box<dyn Error>> {
     let output = Command::new("hackrf_sweep")
         .args([
-            "-f", frequency,
-            "-a", amp_enable,
-            "-l", if_gain_db,
-            "-g", bb_gain_db,
-            "-w", bin_width,
-            "-1" // one shot mode
+            "-f", frequency, "-a", amp_enable, "-l", if_gain_db, "-g", bb_gain_db, "-w", bin_width,
+            "-1", // one shot mode
         ])
-        .stdout(Stdio::piped())  // Redirects stdout to the file
+        .stdout(Stdio::piped()) // Redirects stdout to the file
         .output()?;
 
     if !output.status.success() {
@@ -506,19 +528,20 @@ async fn hackrf_sweep(frequency: &str, amp_enable: &str, if_gain_db: &str, bb_ga
         let parts: Vec<&str> = line.split(',').collect();
         // check if reading has at least one db column (depends on the bid width)
         if parts.len() > 6 {
-
             let mut power_db: Vec<f32> = Vec::new();
 
             let total_columns = parts.len();
             let mut column = 5;
 
             loop {
-                column +=1; // db values start from index 6
-                if column == total_columns {break;}
-                power_db.push(parts[column].trim().parse::<f32>().unwrap()); 
+                column += 1; // db values start from index 6
+                if column == total_columns {
+                    break;
+                }
+                power_db.push(parts[column].trim().parse::<f32>().unwrap());
             }
 
-            let reading = PowerReading{
+            let reading = PowerReading {
                 reading_date: parts[0].trim().to_string(),
                 reading_time: parts[1].trim().to_string(),
                 hz_low: parts[2].trim().parse::<f64>().unwrap(),
@@ -526,17 +549,13 @@ async fn hackrf_sweep(frequency: &str, amp_enable: &str, if_gain_db: &str, bb_ga
                 bin_width: parts[4].trim().parse::<f64>().unwrap(),
                 no_samples: parts[5].trim().parse::<i32>().unwrap(),
                 power_db: power_db,
-                
             };
 
             power_reading.push(reading);
-
         } else {
             eprint!("Something is wrong with reading data from HackRF");
-        } 
+        }
     }
-
-
 
     let data_point = DataPoint {
         power_reading,
@@ -554,20 +573,16 @@ async fn hackrf_sweep(frequency: &str, amp_enable: &str, if_gain_db: &str, bb_ga
 }
 
 async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn Error>> {
-
     let client = Client::new();
     let url = "http://127.0.0.1:1880/".to_string() + endpoint;
 
-    let result = client.post(url)
-                                       .body(json_data)
-                                       .send()
-                                       .await;
+    let result = client.post(url).body(json_data).send().await;
 
     match result {
         Ok(response) => {
             println!("Status {}", response.status());
             Ok(response.status().to_string())
-        },
+        }
         Err(e) => {
             eprint!("Error {}", e);
             Err(Box::new(e))
@@ -582,7 +597,6 @@ fn validate_block(block: &Block) -> bool {
 }
 
 fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
-
     let mut hasher = Sha256::new();
     hasher.update(&[0u8]);
     let hash_result = hasher.finalize();
@@ -604,8 +618,9 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
     let mut index = 0;
     for result in reader.records() {
-
-        if index + 1 > TOTAL {break;}
+        if index + 1 > TOTAL {
+            break;
+        }
         // println!("Index is {}", index);
 
         let record = result.unwrap();
@@ -618,7 +633,7 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
                         data.node_id = id;
                     } else {
                         eprintln!("Index out of bounds: {}", index);
-                    }                    
+                    }
                 }
                 Err(e) => eprintln!("Failed to parse '{}' as integer: {}", node_id, e),
             }
@@ -633,7 +648,7 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
                         data.counter = id;
                     } else {
                         eprintln!("Index out of bounds: {}", index);
-                    }                    
+                    }
                 }
                 Err(e) => eprintln!("Failed to parse '{}' as integer: {}", session_id, e),
             }
@@ -648,7 +663,7 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
                         data.key = Scalar::from(scalar);
                     } else {
                         eprintln!("Index out of bounds: {}", index);
-                    }                    
+                    }
                 }
                 Err(e) => eprintln!("Failed to parse '{}' as integer: {}", key, e),
             }
@@ -657,12 +672,14 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
         index += 1;
     }
 
-    println!("Found {} out of {} keys. Threhold is set to {}", index, TOTAL, THRESHOLD);
+    println!(
+        "Found {} out of {} keys. Threhold is set to {}",
+        index, TOTAL, THRESHOLD
+    );
 
     if index < THRESHOLD {
         return Err(From::from("Not enough keys"));
     }
-
 
     // Define scalar x
     let mut final_key = Scalar::from(0u32);
@@ -679,7 +696,6 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-
     // if let Err(e) = run().await {
     //     eprintln!("Error: {:?}", e);
     // }
@@ -696,7 +712,6 @@ async fn main() {
 
     // let mut blockchain = Blockchain::new();
 
-    
     // println!("Enter a new data to add to the block:");
     // let mut data = String::new();
     // std::io::stdin().read_line(&mut data).expect("Failed to read line");
@@ -707,6 +722,4 @@ async fn main() {
     //     // println!("{:?}", block);
     //     println!("Hash: {}", block.calculate_hash());
     // }
-
 }
-
