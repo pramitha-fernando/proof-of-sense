@@ -13,6 +13,10 @@ use libp2p::{
 };
 use tokio::{sync::Mutex as AsyncMutex, time::{self, Duration}};
 use csv::ReaderBuilder;
+use std::process::{Command, Stdio};
+use std::io::{self, BufReader, BufRead};
+use std::error::Error;
+use reqwest::{self, Body, Client};
 
 #[macro_use]
 extern crate lazy_static;
@@ -30,6 +34,25 @@ lazy_static! {
 
 const TOTAL: usize = 4;
 const THRESHOLD: usize = 3;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct DataPoint {
+    power_reading: Vec<PowerReading>,
+    total_nodes: i32,
+    threshold: i32,
+    recovered_keys: i32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PowerReading {
+    reading_date: String,
+    reading_time: String,
+    hz_low: f64,
+    hz_high: f64,
+    bin_width: f64,
+    no_samples: i32,
+    power_db: Vec<f32>,
+}
 
 
 // Serialize is implemented for AffinePoint and Scalar with serde feature
@@ -363,6 +386,30 @@ impl App {
                 interval.tick().await;
                 let mut bc = blockchain.lock().await;
                 bc.add_block("Sample data".to_string()).await;
+
+                let last_block = bc.get_last_block();
+                let data = serde_json::to_string(&last_block);
+
+                match data {
+                    Ok(json) => {
+                        let _ = send_http(json, "block").await;
+                    }
+                    Err(e) => eprintln!("Failed to serialize block: {}", e),
+                }
+
+                    // minimum and maximum frequencies in MHz
+                let frequency = "2400:2600";
+                // RX RF amplifier 1=Enable, 0=Disable
+                let amp_enable = "0";
+                // RX LNA (IF) gain, 0-40dB, 8dB steps
+                let if_gain_db = "40";
+                // RX VGA (baseband) gain, 0-62dB, 2dB steps
+                let bb_gain_db = "24";
+                // in_width] # FFT bin width (frequency resolution) in Hz, 2445-5000000
+                let bin_width = "1000000";
+
+                let sweep_result = hackrf_sweep(frequency, amp_enable, if_gain_db, bb_gain_db, bin_width).await;
+                
             }
         });
 
@@ -425,7 +472,107 @@ impl App {
     
 
     
+
     
+    
+}
+
+async fn hackrf_sweep(frequency: &str, amp_enable: &str, if_gain_db: &str, bb_gain_db: &str, bin_width: &str) -> Result<(), Box<dyn Error>> {
+
+    let output = Command::new("hackrf_sweep")
+        .args([
+            "-f", frequency,
+            "-a", amp_enable,
+            "-l", if_gain_db,
+            "-g", bb_gain_db,
+            "-w", bin_width,
+            "-1" // one shot mode
+        ])
+        .stdout(Stdio::piped())  // Redirects stdout to the file
+        .output()?;
+
+    if !output.status.success() {
+        eprintln!("Command failed, check your parameters or setup");
+        return Ok(());
+    }
+
+    // Process the output in the next step
+    let reader = BufReader::new(io::Cursor::new(output.stdout));
+
+    let mut power_reading: Vec<PowerReading> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.split(',').collect();
+        // check if reading has at least one db column (depends on the bid width)
+        if parts.len() > 6 {
+
+            let mut power_db: Vec<f32> = Vec::new();
+
+            let total_columns = parts.len();
+            let mut column = 5;
+
+            loop {
+                column +=1; // db values start from index 6
+                if column == total_columns {break;}
+                power_db.push(parts[column].trim().parse::<f32>().unwrap()); 
+            }
+
+            let reading = PowerReading{
+                reading_date: parts[0].trim().to_string(),
+                reading_time: parts[1].trim().to_string(),
+                hz_low: parts[2].trim().parse::<f64>().unwrap(),
+                hz_high: parts[3].trim().parse::<f64>().unwrap(),
+                bin_width: parts[4].trim().parse::<f64>().unwrap(),
+                no_samples: parts[5].trim().parse::<i32>().unwrap(),
+                power_db: power_db,
+                
+            };
+
+            power_reading.push(reading);
+
+        } else {
+            eprint!("Something is wrong with reading data from HackRF");
+        } 
+    }
+
+
+
+    let data_point = DataPoint {
+        power_reading,
+        total_nodes: 4,
+        threshold: 3,
+        recovered_keys: 2,
+    };
+
+    // Serialize the data to a JSON string
+    let json_data = serde_json::to_string(&data_point)?;
+
+    let result = send_http(json_data, "data").await;
+
+    Ok(())
+}
+
+async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn Error>> {
+
+    let client = Client::new();
+    let url = "http://127.0.0.1:1880/".to_string() + endpoint;
+
+    let result = client.post(url)
+                                       .body(json_data)
+                                       .send()
+                                       .await;
+
+    match result {
+        Ok(response) => {
+            println!("Status {}", response.status());
+            Ok(response.status().to_string())
+        },
+        Err(e) => {
+            eprint!("Error {}", e);
+            Err(Box::new(e))
+        }
+    }
 }
 
 fn validate_block(block: &Block) -> bool {
