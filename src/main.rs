@@ -85,6 +85,13 @@ struct Proof {
     point_rp: AffinePoint,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Transaction {
+    seller: String,
+    buyer: String,
+    metadata: String,
+}
+
 // to_string() implementaio for Proof struct
 impl std::fmt::Display for Proof {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
