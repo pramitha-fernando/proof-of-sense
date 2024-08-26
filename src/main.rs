@@ -1,11 +1,11 @@
 use csv::ReaderBuilder;
 use k256::{
-    elliptic_curve::{group::GroupEncoding, sec1::ToEncodedPoint},
+    elliptic_curve::{group::GroupEncoding, rand_core::block, sec1::ToEncodedPoint},
     AffinePoint, ProjectivePoint, Scalar,
 };
 use libp2p::{
     core::upgrade,
-    futures::{executor::block_on, StreamExt},
+    futures::{executor::block_on, future::ok, StreamExt},
     gossipsub::{
         Gossipsub, GossipsubConfig, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity,
         RawGossipsubMessage, ValidationMode,
@@ -25,12 +25,12 @@ use sha2::{
     digest::generic_array::{typenum::U32, GenericArray},
     Digest, Sha256,
 };
-use std::error::Error;
+use std::{error::Error, fs::OpenOptions, io::{Read, Write}, path::Path};
 use std::io::{self, BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::{
     collections::HashSet,
-    fmt::Write,
+    fmt::Write as FileWrite,
     fs::File,
     ptr::read,
     sync::{Arc, Mutex},
@@ -336,9 +336,11 @@ impl Blockchain {
 
         println!("Calculate hash is {}", last_block.calculate_hash());
         let current_height = last_block.index;
+        let _ = self.append_block_to_file("blockchain.data", &new_block);
         self.chain.push(new_block);
         println!("Block mined!");
         println!("Total blocks mined: {}", current_height);
+
     }
 
     // async fn add_received_block(&mut self, new_block: Block) {
@@ -356,6 +358,66 @@ impl Blockchain {
         // there is always at least one block because of the genesis block
         self.chain.last().unwrap().clone()
     }
+
+    // save the entire blockchain as JSON
+    fn save_to_file(&self, filename: &str) -> io::Result<()> {
+        let serialized = serde_json::to_string(self)?;
+        let mut file = File::create(filename)?;
+        file.write_all(serialized.as_bytes())?;
+        Ok(())
+    }
+
+    // load a seralized JSON blockchain
+    fn load_from_file(filename: &str) -> io::Result<Self> {
+        let mut file = File::open(filename)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        // let blockchain: Blockchain = serde_json::from_str(&contents)?;
+        // Ok(blockchain)
+
+        let mut chain = Vec::new();
+        let mut last_block_index = 0;
+
+        for line in contents.lines() {
+            let block: Block = serde_json::from_str(line)?;
+            last_block_index = block.index;
+            chain.push(block);
+        }
+
+        Ok(
+            Blockchain { 
+                chain, 
+                total_parts: TOTAL,
+                threshold: THRESHOLD,
+                height: last_block_index
+            }
+        )
+    }
+
+    // append to existing blockchain
+    fn append_block_to_file(&self, filename: &str, block: &Block) -> io::Result<()> {
+        // check if the file exists
+        if Path::new(filename).exists() {
+            let mut file = OpenOptions::new()
+                                 .append(true)
+                                 .open(filename)?;
+
+            // append the serialized block to the file
+            let serialized_block = serde_json::to_string(block)?;
+            writeln!(file, "{}", serialized_block)?;
+        } else {
+            // if the file doesn't exists, create it and write the block
+            let mut file = File::create(filename)?;
+            // write the serialzed block to the new file
+            let serialized_block = serde_json::to_string(block)?;
+            writeln!(file, "{}", serialized_block)?;
+        }
+
+        Ok(())
+    }
+
+
 }
 
 struct App {
@@ -405,9 +467,38 @@ impl App {
 
         Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+        let choice = get_user_choice();
+
+        let blockchain = match choice {
+
+            1 => {
+                let filename = "blockchain.data";
+
+                if Path::new(filename).exists() {
+                    let loaded_blockchain = Blockchain::load_from_file(filename)?;
+                    println!("Loaded blockchain with {} blocks!", loaded_blockchain.height);
+                    Arc::new(AsyncMutex::new(loaded_blockchain))
+                } else {
+                    println!("No existing blockchain found. Starting a new one.");
+                    Arc::new(AsyncMutex::new(Blockchain::new()))
+                }
+            }
+
+            _ => {
+                let filename = "blockchain.data";
+
+                if Path::new(filename).exists() {
+                    std::fs::remove_file(filename)?;
+                    println!("Existing blockchain data cleaned!");
+                }
+                Arc::new(AsyncMutex::new(Blockchain::new()))
+            }
+            
+        };
+
         Ok(Self {
-            swarm: swarm,
-            blockchain: Arc::new(AsyncMutex::new(Blockchain::new())),
+            swarm,
+            blockchain,
             peers: Arc::new(AsyncMutex::new(HashSet::new())),
         })
     }
@@ -525,7 +616,7 @@ async fn hackrf_sweep(
         return Ok(());
     }
 
-    // Process the output in the next step
+    // Process the output 
     let reader = BufReader::new(io::Cursor::new(output.stdout));
 
     let mut power_reading: Vec<PowerReading> = Vec::new();
@@ -560,7 +651,7 @@ async fn hackrf_sweep(
 
             power_reading.push(reading);
         } else {
-            eprint!("Something is wrong with reading data from HackRF");
+            eprint!("Something is wrong with reading data from SDR");
         }
     }
 
@@ -574,7 +665,7 @@ async fn hackrf_sweep(
     // Serialize the data to a JSON string
     let json_data = serde_json::to_string(&data_point)?;
 
-    let result = send_http(json_data, "data").await;
+    let _result = send_http(json_data, "data").await;
 
     Ok(())
 }
@@ -595,6 +686,17 @@ async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn 
             Err(Box::new(e))
         }
     }
+}
+
+fn get_user_choice() -> u8 {
+    println!("Select an option:");
+    println!("0: Start a new blockchain (default)");
+    println!("1: Load existing blockchain");
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).expect("Failed to read input");
+    let choice: u8 = input.trim().parse().unwrap_or(0);
+    choice
 }
 
 fn validate_block(block: &Block) -> bool {
