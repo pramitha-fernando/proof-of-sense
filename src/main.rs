@@ -158,7 +158,7 @@ struct Block {
     timestamp: i64,
     proof: Proof,
     previous_hash: String,
-    data: String,
+    transactions: String,
 }
 
 impl Block {
@@ -167,14 +167,14 @@ impl Block {
         timestamp: i64,
         proof: Proof,
         previous_hash: String,
-        data: String,
+        transactions: String,
     ) -> Self {
         Block {
             index,
             timestamp,
             proof,
             previous_hash,
-            data,
+            transactions,
         }
     }
 
@@ -184,7 +184,7 @@ impl Block {
         hasher.update(self.timestamp.to_string().as_bytes());
         hasher.update(self.proof.to_string().as_bytes());
         hasher.update(self.previous_hash.as_bytes());
-        hasher.update(self.data.as_bytes());
+        hasher.update(self.transactions.as_bytes());
 
         let hash_result = hasher.finalize();
         let mut hash_str = String::new();
