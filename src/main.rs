@@ -19,8 +19,9 @@ use libp2p::{
     tcp::TcpConfig,
     yamux, PeerId, Swarm, Transport,
 };
-use reqwest::{self, Body, Client};
+use reqwest::{self, Body, Client, multipart};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{
     digest::generic_array::{typenum::U32, GenericArray},
     Digest, Sha256,
@@ -40,6 +41,9 @@ use tokio::{
     time::{self, Duration},
 };
 
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+
 #[macro_use]
 extern crate lazy_static;
 lazy_static! {
@@ -56,6 +60,8 @@ lazy_static! {
 
 const TOTAL: usize = 4;
 const THRESHOLD: usize = 3;
+
+type IPFSHash = String;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataPoint {
@@ -159,6 +165,7 @@ struct Block {
     proof: Proof,
     previous_hash: String,
     transactions: String,
+    spectrum_data: Vec<IPFSHash>,
 }
 
 impl Block {
@@ -168,6 +175,7 @@ impl Block {
         proof: Proof,
         previous_hash: String,
         transactions: String,
+        spectrum_data: Vec<IPFSHash>,
     ) -> Self {
         Block {
             index,
@@ -175,6 +183,7 @@ impl Block {
             proof,
             previous_hash,
             transactions,
+            spectrum_data,
         }
     }
 
@@ -186,6 +195,10 @@ impl Block {
         hasher.update(self.previous_hash.as_bytes());
         hasher.update(self.transactions.as_bytes());
 
+        for data in &self.spectrum_data {
+            hasher.update(data.as_bytes());
+        }
+        
         let hash_result = hasher.finalize();
         let mut hash_str = String::new();
         for byte in hash_result {
@@ -318,20 +331,23 @@ impl Blockchain {
             genesis_proof,
             String::new(),
             "Genesis Block".to_string(),
+            Vec::new(),
         );
         self.chain.push(genesis_block);
     }
 
     // add a mined block to an existing chain
-    async fn add_block(&mut self, data: String) {
+    async fn add_block(&mut self, transactions: String, spectrum_data: Vec<IPFSHash>) {
         println!("Mining new block...");
         let last_block = self.chain.last().unwrap();
+
         let new_block = Block::new(
             last_block.index + 1,
             chrono::Utc::now().timestamp(),
             Block::mine_block(TOTAL, THRESHOLD).await,
             last_block.calculate_hash(),
-            data,
+            transactions,
+            spectrum_data,
         );
 
         println!("Calculate hash is {}", last_block.calculate_hash());
@@ -503,15 +519,53 @@ impl App {
         })
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let blockchain = self.blockchain.clone();
 
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(6)); // mining interval
+            let mut rng = StdRng::from_entropy();
+
+            // let mut interval = time::interval(Duration::from_secs(6)); // mining interval
             loop {
-                interval.tick().await;
+                // interval.tick().await;
+
+                let random_secs = rng.gen_range(4..=10); // Random number between 4 and 10
+
+                let mut spectrum_data: Vec<IPFSHash> = Vec::new(); // Initialize an empty vector to store IPFS hashes
+
+
+                // Run the hackrf_sweep random_secs times
+                for _ in 0..random_secs {
+                    // minimum and maximum frequencies in MHz
+                    let frequency = "2400:2600";
+                    // RX RF amplifier 1=Enable, 0=Disable
+                    let amp_enable = "0";
+                    // RX LNA (IF) gain, 0-40dB, 8dB steps
+                    let if_gain_db = "40";
+                    // RX VGA (baseband) gain, 0-62dB, 2dB steps
+                    let bb_gain_db = "24";
+                    // in_width] # FFT bin width (frequency resolution) in Hz, 2445-5000000
+                    let bin_width = "1000000";
+
+                    let result = hackrf_sweep(frequency, amp_enable, if_gain_db, bb_gain_db, bin_width).await;
+
+                    match result {
+                        Ok(ipfs_hash) => {
+                            spectrum_data.push(ipfs_hash);
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to get IPFS hash: {}", e);
+                        },
+                    }
+
+                    // Wait for 1 second before the next hackrf_sweep
+                    time::sleep(Duration::from_secs(1)).await;
+                }
+
                 let mut bc = blockchain.lock().await;
-                bc.add_block("Sample data".to_string()).await;
+
+                let transactions = "Sample data".to_string();
+                bc.add_block(transactions, spectrum_data).await;
 
                 let last_block = bc.get_last_block();
                 let data = serde_json::to_string(&last_block);
@@ -523,19 +577,7 @@ impl App {
                     Err(e) => eprintln!("Failed to serialize block: {}", e),
                 }
 
-                // minimum and maximum frequencies in MHz
-                let frequency = "2400:2600";
-                // RX RF amplifier 1=Enable, 0=Disable
-                let amp_enable = "0";
-                // RX LNA (IF) gain, 0-40dB, 8dB steps
-                let if_gain_db = "40";
-                // RX VGA (baseband) gain, 0-62dB, 2dB steps
-                let bb_gain_db = "24";
-                // in_width] # FFT bin width (frequency resolution) in Hz, 2445-5000000
-                let bin_width = "1000000";
-
-                let sweep_result =
-                    hackrf_sweep(frequency, amp_enable, if_gain_db, bb_gain_db, bin_width).await;
+                
             }
         });
 
@@ -602,7 +644,7 @@ async fn hackrf_sweep(
     if_gain_db: &str,
     bb_gain_db: &str,
     bin_width: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let output = Command::new("hackrf_sweep")
         .args([
             "-f", frequency, "-a", amp_enable, "-l", if_gain_db, "-g", bb_gain_db, "-w", bin_width,
@@ -613,7 +655,7 @@ async fn hackrf_sweep(
 
     if !output.status.success() {
         eprintln!("Command failed, check your parameters or setup");
-        return Ok(());
+        return Ok("".to_string());
     }
 
     // Process the output 
@@ -664,13 +706,45 @@ async fn hackrf_sweep(
 
     // Serialize the data to a JSON string
     let json_data = serde_json::to_string(&data_point)?;
+         // Create a multipart form part
+    let form = multipart::Form::new()
+         .part("file", multipart::Part::text(json_data.clone()).file_name("data.json"));
+ 
 
     let _result = send_http(json_data, "data").await;
 
-    Ok(())
+     // Create a new HTTP client
+     let client = Client::new();
+
+
+     // Send the POST request to the IPFS API with the file
+     let response = client
+         .post("http://127.0.0.1:5004/api/v0/add") // local IPFS node should be running
+         .multipart(form)
+         .send()
+         .await?;
+ 
+     // Print the response
+     let response_text = response.text().await?;
+
+     // Parse the response text as JSON
+    let json: Value = serde_json::from_str(&response_text)?;
+
+    // initiate an empty string for the IPFS Hash
+    let mut ipfs_hash: IPFSHash = "".to_string(); 
+
+    // Extract the hash from the JSON
+    if let Some(hash) = json.get("Hash") {
+        ipfs_hash = hash.to_string();
+        println!("Uploaded file hash: {}", ipfs_hash);
+    } else {
+        println!("Hash not found in response.");
+    }
+
+    Ok(ipfs_hash)
 }
 
-async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn Error>> {
+async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
     let url = "http://127.0.0.1:1880/".to_string() + endpoint;
 
