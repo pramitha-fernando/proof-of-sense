@@ -1,0 +1,42 @@
+[
+    {
+        "id": "ba8602b29c438cf7",
+        "type": "ui_text",
+        "z": "5fdd50edc02cb839",
+        "group": "5528e937f5f5500d",
+        "order": 5,
+        "width": 7,
+        "height": 1,
+        "name": "",
+        "label": "Threshold:",
+        "format": "{{msg.payload.threshold}}",
+        "layout": "row-left",
+        "className": "",
+        "style": true,
+        "font": "Arial,Arial,Helvetica,sans-serif",
+        "fontSize": 16,
+        "color": "#040d90",
+        "x": 1070,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "5528e937f5f5500d",
+        "type": "ui_group",
+        "name": "Nodes Overview",
+        "tab": "1f5c5b556117f793",
+        "order": 1,
+        "disp": true,
+        "width": "20",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "1f5c5b556117f793",
+        "type": "ui_tab",
+        "name": "Overview",
+        "icon": "fa-th-large",
+        "disabled": false,
+        "hidden": false
+    }
+]
