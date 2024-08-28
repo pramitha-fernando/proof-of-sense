@@ -21,7 +21,7 @@ use libp2p::{
 };
 use reqwest::{self, Body, Client, multipart};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{
     digest::generic_array::{typenum::U32, GenericArray},
     Digest, Sha256,
@@ -58,17 +58,21 @@ lazy_static! {
 
 }
 
+const NODEID: usize = 1; // change node id from here
+
 const TOTAL: usize = 4;
 const THRESHOLD: usize = 3;
+
 
 type IPFSHash = String;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataPoint {
+    node_id: usize,
     power_reading: Vec<PowerReading>,
-    total_nodes: i32,
-    threshold: i32,
-    recovered_keys: i32,
+    total_nodes: usize,
+    threshold: usize,
+    recovered_keys: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -207,12 +211,12 @@ impl Block {
         hash_str
     }
 
-    async fn mine_block(total_parts: usize, threshold: usize) -> Proof {
+    async fn mine_block(total_key_parts: usize, threshold: usize) -> Proof {
         let mut validated = false;
         let mut proof = Proof::new(*POINT_I, Scalar::ONE, *POINT_I, *POINT_I); // placeholder
 
         while !validated {
-            if let Ok((scalar_x, pub_key)) = get_recovered_key() {
+            if let Ok((scalar_x, pub_key)) = get_recovered_key(threshold, total_key_parts).await {
                 *POINT_B.lock().unwrap() = pub_key; // update the public key
 
                 // generate random scalar r and point A
@@ -251,10 +255,10 @@ impl Block {
                 validated = Self::valid_proof(&proof);
             } else {
                 eprintln!("Not enough recovered keys yet!");
-                time::sleep(Duration::from_secs(5)).await;
+                // time::sleep(Duration::from_secs(5)).await; 
             }
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // tokio::time::sleep(Duration::from_secs(5)).await;
 
         proof
     }
@@ -333,6 +337,7 @@ impl Blockchain {
             "Genesis Block".to_string(),
             Vec::new(),
         );
+        let _ = self.append_block_to_file("blockchain.data", &genesis_block);
         self.chain.push(genesis_block);
     }
 
@@ -572,7 +577,7 @@ impl App {
 
                 match data {
                     Ok(json) => {
-                        let _ = send_http(json, "block").await;
+                        let _ = send_data(json, "block").await;
                     }
                     Err(e) => eprintln!("Failed to serialize block: {}", e),
                 }
@@ -698,9 +703,10 @@ async fn hackrf_sweep(
     }
 
     let data_point = DataPoint {
+        node_id: NODEID,
         power_reading,
-        total_nodes: 4,
-        threshold: 3,
+        total_nodes: TOTAL,
+        threshold: THRESHOLD,
         recovered_keys: 2,
     };
 
@@ -711,7 +717,7 @@ async fn hackrf_sweep(
          .part("file", multipart::Part::text(json_data.clone()).file_name("data.json"));
  
 
-    let _result = send_http(json_data, "data").await;
+    let _result = send_data(json_data, "data").await;
 
      // Create a new HTTP client
      let client = Client::new();
@@ -736,15 +742,15 @@ async fn hackrf_sweep(
     // Extract the hash from the JSON
     if let Some(hash) = json.get("Hash") {
         ipfs_hash = hash.to_string();
-        println!("Uploaded file hash: {}", ipfs_hash);
+        // println!("Uploaded file hash: {}", ipfs_hash);
     } else {
-        println!("Hash not found in response.");
+        println!("IPFS upload failed");
     }
 
     Ok(ipfs_hash)
 }
 
-async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+async fn send_data(json_data: String, endpoint: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
     let url = "http://127.0.0.1:1880/".to_string() + endpoint;
 
@@ -752,7 +758,7 @@ async fn send_http(json_data: String, endpoint: &str) -> Result<String, Box<dyn 
 
     match result {
         Ok(response) => {
-            println!("Status {}", response.status());
+            // println!("Status {}", response.status());
             Ok(response.status().to_string())
         }
         Err(e) => {
@@ -779,14 +785,14 @@ fn validate_block(block: &Block) -> bool {
     Block::valid_proof(&block.proof)
 }
 
-fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
+async fn get_recovered_key(threshold: usize, total_keys: usize) -> Result<(Scalar, ProjectivePoint), String> {
     let mut hasher = Sha256::new();
     hasher.update(&[0u8]);
     let hash_result = hasher.finalize();
 
     let empty_rx_data = ReceivedData::new(0, 0, Scalar::from(0u32), hash_result);
 
-    let mut rx_data = vec![empty_rx_data; TOTAL]; //initiate recovered key vector to all zeros. Vec size is total keys
+    let mut rx_data = vec![empty_rx_data; total_keys]; //initiate recovered key vector to all zeros. Vec size is total keys
 
     let metadata = std::fs::metadata("sample_keys.txt").unwrap();
     if metadata.len() == 0 {
@@ -801,7 +807,7 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
     let mut index = 0;
     for result in reader.records() {
-        if index + 1 > TOTAL {
+        if index + 1 > total_keys {
             break;
         }
         // println!("Index is {}", index);
@@ -857,10 +863,10 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
     println!(
         "Found {} out of {} keys. Threhold is set to {}",
-        index, TOTAL, THRESHOLD
+        index, total_keys, threshold
     );
 
-    if index < THRESHOLD {
+    if index < threshold {
         return Err(From::from("Not enough keys"));
     }
 
@@ -873,6 +879,19 @@ fn get_recovered_key() -> Result<(Scalar, ProjectivePoint), String> {
 
     // Calculate points B s.t. B = xG
     let final_public_key = *POINT_G * final_key;
+
+    // send key recovery data
+    let recovery_data = json!( {
+        "node_id": NODEID,
+        "threshold": THRESHOLD,
+        "total_nodes": TOTAL,
+        "recovered_keys": index,
+    });
+
+    let json_data = serde_json::to_string(&recovery_data).unwrap();
+
+    let _ = send_data(json_data, "keys").await;
+
 
     Ok((final_key, final_public_key))
 }
