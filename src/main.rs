@@ -725,7 +725,7 @@ async fn hackrf_sweep(
 
      // Send the POST request to the IPFS API with the file
      let response = client
-         .post("http://127.0.0.1:5004/api/v0/add") // local IPFS node should be running
+         .post("http://127.0.0.1:5004/api/v0/add") // local IPFS node should be running, default port is 5001
          .multipart(form)
          .send()
          .await?;
